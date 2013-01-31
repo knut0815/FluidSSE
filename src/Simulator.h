@@ -9,14 +9,16 @@
 #ifndef FluidSSE_Simulator_h
 #define FluidSSE_Simulator_h
 
+#define numMaterials 4
+
 #include <x86intrin.h>
-#include "mm_malloc.h"
+#include "Material.h"
 #include "Particle.h"
 #include "Node.h"
 
-#define maxParticles 1000000
+#define maxParticles 128*96*40
 
-class Simulator {
+class Simulator : public ofThread {
     __m128 dxSub[8];
     __m128 lowBound, highBound, lowBoundS, highBoundS;
 public:
@@ -24,6 +26,8 @@ public:
     int nParticles;
     Particle *particles;
     Node *grid;
+    Material materials[numMaterials];
+    int loadedMaterial;
     
     void InitializeGrid(int gridSizeX, int gridSizeY, int gridSizeZ) {
         gSizeX = gridSizeX;
@@ -49,21 +53,24 @@ public:
         
         lowBound = _mm_set_ps(0.0f, .1f, .1f, .1f);
         highBound = _mm_set_ps(0.0f, gSizeZ-1.1, gSizeY-1.1, gSizeX-1.1);
-        lowBoundS = _mm_set_ps(0.0f, 5.0f, 5.0f, 5.0f);
-        highBoundS = _mm_set_ps(0.0f, gSizeZ-6, gSizeY-6, gSizeX-6);
+        lowBoundS = _mm_set_ps(0.0f, 3.0f, 3.0f, 3.0f);
+        highBoundS = _mm_set_ps(0.0f, gSizeZ-4, gSizeY-4, gSizeX-4);
+        
+        materials[0].Initialize(.25, 2, 0, .1, .1);
+        loadedMaterial = -1;
     }
     
     void AddParticles() {
-        for (int i = 0; i < 100; i++) {
-            for (int j = 0; j < 100; j++) {
-                for (int k = 0; k < 100; k++) {
-                    particles[nParticles++].Initialize(i*.5+25, j*.5+25, k*.5+25);
+        for (int i = 0; i < 128; i++) {
+            for (int j = 0; j < 96; j++) {
+                for (int k = 0; k < 40; k++) {
+                    particles[nParticles++].Initialize(i*.5+3, j*.5+3, k*.5+3, 0);
                 }
             }
         }
     }
     
-    void Update() {
+    void threadedFunction() {
         // Clear the grid
         __m128 zero = _mm_setzero_ps();
         for (int i = 0; i < gSize; i++) {
@@ -122,8 +129,19 @@ public:
         
         // Sum particle density from grid, and add pressure and elastic forces to grid
         __m128 mask3D = _mm_castsi128_ps(_mm_set_epi32(0x00000000, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF));
+        loadedMaterial = -1;
+        __m128 stiffness, restDensity, elasticity, viscosity;
+        __m128 maxPressure = _mm_set1_ps(.5);
         for (int i = 0; i < nParticles; i++) {
             Particle &p = particles[i];
+            
+            if (p.material != loadedMaterial) {
+                loadedMaterial = p.material;
+                stiffness = _mm_set1_ps(materials[p.material].stiffness);
+                restDensity = _mm_set1_ps(materials[p.material].restDensity);
+                elasticity = _mm_set1_ps(materials[p.material].elasticity);
+                viscosity = _mm_set1_ps(materials[p.material].viscosity);
+            }
             
             __m128 density = _mm_setzero_ps();
             __m128 pdx = _mm_load_ps(p.dx);
@@ -139,15 +157,14 @@ public:
                 }
             }
             
-            float densityScalar;
-            _mm_store_ss(&densityScalar, density);
-            
-            float pressure = min(.0625*(densityScalar-8), .5);
+            __m128 pressure = _mm_min_ps(_mm_mul_ps(stiffness, _mm_sub_ps(density, restDensity)), maxPressure);
             
             __m128 px = _mm_load_ps(p.x);
             __m128 wallforce = _mm_add_ps(_mm_max_ps(zero, _mm_sub_ps(lowBoundS, px)), _mm_min_ps(zero, _mm_sub_ps(highBoundS, px)));
             
-            //wallforce = _mm_setzero_ps();
+            __m128 e0 = _mm_add_ps(_mm_mul_ps(elasticity, _mm_load_ps(&p.strain[0])), _mm_mul_ps(viscosity, _mm_load_ps(&p.stress[0])));
+            __m128 e1 = _mm_add_ps(_mm_mul_ps(elasticity, _mm_load_ps(&p.strain[4])), _mm_mul_ps(viscosity, _mm_load_ps(&p.stress[4])));
+            __m128 e2 = _mm_add_ps(_mm_mul_ps(elasticity, _mm_load_ps(&p.strain[8])), _mm_mul_ps(viscosity, _mm_load_ps(&p.stress[8])));
             
             nodePtr = &grid[p.c];
             phiPtr = p.phi;
@@ -158,7 +175,8 @@ public:
                         float w = *(phiPtr+3);
                         __m128 wvec = _mm_set_ps1(w);
                         
-                        __m128 a = _mm_sub_ps(_mm_mul_ps(wvec, wallforce), _mm_mul_ps(phi, _mm_set1_ps(pressure)));
+                        __m128 a = _mm_sub_ps(_mm_mul_ps(wvec, wallforce), _mm_mul_ps(phi, pressure));
+                        a = _mm_sub_ps(a, _mm_add_ps(_mm_add_ps(_mm_mul_ps(e0, _mm_set1_ps(phiPtr[0])), _mm_mul_ps(e1, _mm_set1_ps(phiPtr[1]))), _mm_mul_ps(e2, _mm_set1_ps(phiPtr[2]))));
                         _mm_store_ps(nodePtr->ax, _mm_add_ps(_mm_load_ps(nodePtr->ax), a));
                     }
                 }
@@ -220,29 +238,68 @@ public:
         }
         
         // Advance particles
+        __m128 Lmul0 = _mm_set_ps(0, .5, .5, 1);
+        __m128 Lmul1 = _mm_set_ps(0, .5, 1, .5);
+        __m128 Lmul2 = _mm_set_ps(0, 1, .5, .5);
+        __m128 LTmul0 = _mm_set_ps(0, .5, .5, 0);
+        __m128 LTmul1 = _mm_set_ps(0, .5, 0, .5);
+        __m128 LTmul2 = _mm_set_ps(0, 0, .5, .5);
+        __m128 smoothing;
+        loadedMaterial = -1;
         for (int i = 0; i < nParticles; i++) {
             Particle &p = particles[i];
             
+            if (p.material != loadedMaterial) {
+                loadedMaterial = p.material;
+                smoothing = _mm_set1_ps(materials[p.material].smoothing);
+            }
+
+            
             __m128 gu = _mm_setzero_ps();
+            __m128 L0, L1, L2;
+            L0 = L1 = L2 = _mm_setzero_ps();
             
             Node *nodePtr = &grid[p.c];
             float *phiPtr = p.phi;
             for (int x = 0; x < 2; x++, nodePtr += gSizeY_2) {
                 for (int y = 0; y < 2; y++, nodePtr += gSizeZ_2) {
                     for (int z = 0; z < 2 ; z++, nodePtr++, phiPtr += 4) {
-                        //__m128 phi = _mm_and_ps(_mm_load_ps(phiPtr), mask3D);
+                        __m128 phi = _mm_and_ps(_mm_load_ps(phiPtr), mask3D);
                         float w = *(phiPtr+3);
                         __m128 wvec = _mm_set_ps1(w);
-                        gu = _mm_add_ps(gu, _mm_mul_ps(wvec, _mm_load_ps(nodePtr->u)));
+                        __m128 nu = _mm_load_ps(nodePtr->u);
+                        gu = _mm_add_ps(gu, _mm_mul_ps(wvec, nu));
+                        L0 = _mm_add_ps(L0, _mm_mul_ps(phi, _mm_shuffle_ps(nu, nu, 0x00)));
+                        L1 = _mm_add_ps(L1, _mm_mul_ps(phi, _mm_shuffle_ps(nu, nu, 0x55)));
+                        L2 = _mm_add_ps(L2, _mm_mul_ps(phi, _mm_shuffle_ps(nu, nu, 0xAA)));
                     }
                 }
             }
+            
+            // integrate stress tensor
+            __m128 LT0 = _mm_shuffle_ps(L1, L2, _MM_SHUFFLE(0, 0, 0, 0));
+            __m128 LT1 = _mm_shuffle_ps(L0, L2, _MM_SHUFFLE(1, 1, 1, 1));
+            __m128 LT2 = _mm_shuffle_ps(L0, L1, _MM_SHUFFLE(2, 2, 2, 2));
+            LT2 = _mm_shuffle_ps(LT2, LT2, _MM_SHUFFLE(0, 0, 2, 0));
+            
+            L0 = _mm_add_ps(_mm_mul_ps(Lmul0, L0), _mm_mul_ps(LTmul0, LT0));
+            L1 = _mm_add_ps(_mm_mul_ps(Lmul1, L1), _mm_mul_ps(LTmul1, LT1));
+            L2 = _mm_add_ps(_mm_mul_ps(Lmul2, L2), _mm_mul_ps(LTmul2, LT2));
+            
+            _mm_store_ps(&p.stress[0], L0);
+            _mm_store_ps(&p.stress[4], L1);
+            _mm_store_ps(&p.stress[8], L2);
+            
+            _mm_store_ps(&p.strain[0], _mm_add_ps(_mm_load_ps(&p.strain[0]), L0));
+            _mm_store_ps(&p.strain[4], _mm_add_ps(_mm_load_ps(&p.strain[4]), L1));
+            _mm_store_ps(&p.strain[8], _mm_add_ps(_mm_load_ps(&p.strain[8]), L2));
             
             __m128 px = _mm_add_ps(_mm_load_ps(p.x), gu);
             px = _mm_min_ps(_mm_max_ps(lowBound, px), highBound);
             
             _mm_store_ps(p.x, px);
-            _mm_store_ps(p.u, gu);
+            __m128 pu = _mm_load_ps(p.u);
+            _mm_store_ps(p.u, _mm_add_ps(pu, _mm_mul_ps(smoothing, _mm_sub_ps(gu, pu))));
         }
     }
 };

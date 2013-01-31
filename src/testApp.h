@@ -4,7 +4,7 @@
 #include "Simulator.h"
 
 class testApp : public ofBaseApp{
-    Simulator simulator;
+    Simulator *simulator;
     ofEasyCam cam;
 	public:
 		void setup();
@@ -20,5 +20,5 @@ class testApp : public ofBaseApp{
 		void windowResized(int w, int h);
 		void dragEvent(ofDragInfo dragInfo);
 		void gotMessage(ofMessage msg);
-		
+        void enableFog(float near, float far);
 };
