@@ -17,6 +17,8 @@
 #define maxParticles 1000000
 
 class Simulator {
+    __m128 dxSub[8];
+    __m128 lowBound, highBound, lowBoundS, highBoundS;
 public:
     int gSizeX, gSizeY, gSizeZ, gSizeY_2, gSizeZ_2, gSize;
     int nParticles;
@@ -36,6 +38,19 @@ public:
         }
         particles = (Particle*)_mm_malloc(maxParticles*sizeof(Particle), 16);
         nParticles = 0;
+        
+        for (int x = 0; x < 2; x++) {
+            for (int y = 0; y < 2; y++) {
+                for (int z = 0; z < 2; z++) {
+                    dxSub[x*4+y*2+z] = _mm_set_ps(-1, z, y, x);
+                }
+            }
+        }
+        
+        lowBound = _mm_set_ps(0.0f, .1f, .1f, .1f);
+        highBound = _mm_set_ps(0.0f, gSizeZ-1.1, gSizeY-1.1, gSizeX-1.1);
+        lowBoundS = _mm_set_ps(0.0f, 5.0f, 5.0f, 5.0f);
+        highBoundS = _mm_set_ps(0.0f, gSizeZ-6, gSizeY-6, gSizeX-6);
     }
     
     void AddParticles() {
@@ -115,10 +130,11 @@ public:
             
             Node *nodePtr = &grid[p.c];
             float *phiPtr = &p.phi[3];
+            int dxi = 0;
             for (int x = 0; x < 2; x++, nodePtr += gSizeY_2) {
                 for (int y = 0; y < 2; y++, nodePtr += gSizeZ_2) {
-                    for (int z = 0; z < 2 ; z++, nodePtr++, phiPtr += 4) {
-                        density = _mm_add_ps(density, _mm_mul_ps(_mm_load1_ps(phiPtr), _mm_dp_ps(_mm_load_ps(nodePtr->gx), pdx, 0x7f)));
+                    for (int z = 0; z < 2 ; z++, nodePtr++, phiPtr += 4, dxi++) {
+                        density = _mm_add_ps(density, _mm_mul_ps(_mm_load1_ps(phiPtr), _mm_dp_ps(_mm_load_ps(nodePtr->gx), _mm_sub_ps(pdx, dxSub[dxi]), 0xff)));
                     }
                 }
             }
@@ -126,7 +142,60 @@ public:
             float densityScalar;
             _mm_store_ss(&densityScalar, density);
             
-            float pressure = min(.25*(densityScalar-2), .5);
+            float pressure = min(.0625*(densityScalar-8), .5);
+            
+            __m128 px = _mm_load_ps(p.x);
+            __m128 wallforce = _mm_add_ps(_mm_max_ps(zero, _mm_sub_ps(lowBoundS, px)), _mm_min_ps(zero, _mm_sub_ps(highBoundS, px)));
+            
+            //wallforce = _mm_setzero_ps();
+            
+            nodePtr = &grid[p.c];
+            phiPtr = p.phi;
+            for (int x = 0; x < 2; x++, nodePtr += gSizeY_2) {
+                for (int y = 0; y < 2; y++, nodePtr += gSizeZ_2) {
+                    for (int z = 0; z < 2 ; z++, nodePtr++, phiPtr += 4) {
+                        __m128 phi = _mm_and_ps(_mm_load_ps(phiPtr), mask3D);
+                        float w = *(phiPtr+3);
+                        __m128 wvec = _mm_set_ps1(w);
+                        
+                        __m128 a = _mm_sub_ps(_mm_mul_ps(wvec, wallforce), _mm_mul_ps(phi, _mm_set1_ps(pressure)));
+                        _mm_store_ps(nodePtr->ax, _mm_add_ps(_mm_load_ps(nodePtr->ax), a));
+                    }
+                }
+            }
+        }
+        
+        // Divide grid accelerations by mass
+        for (int i = 0; i < gSize; i++) {
+            Node &n = grid[i];
+            n.m = n.gx[3];
+            if (n.m > 0) {
+                n.invM = 1/n.m;
+                _mm_store_ps(n.ax, _mm_mul_ps(_mm_load_ps(n.ax), _mm_set_ps1(n.invM)));
+                n.ax[1] -= .01f;
+            }
+        }
+        
+        // Accelerate particles and interpolate velocity back to grid
+        for (int i = 0; i < nParticles; i++) {
+            Particle &p = particles[i];
+            
+            __m128 ga = _mm_setzero_ps();
+            Node *nodePtr = &grid[p.c];
+            float *phiPtr = p.phi;
+            for (int x = 0; x < 2; x++, nodePtr += gSizeY_2) {
+                for (int y = 0; y < 2; y++, nodePtr += gSizeZ_2) {
+                    for (int z = 0; z < 2 ; z++, nodePtr++, phiPtr += 4) {
+                        //__m128 phi = _mm_and_ps(_mm_load_ps(phiPtr), mask3D);
+                        float w = *(phiPtr+3);
+                        __m128 wvec = _mm_set_ps1(w);
+                        ga = _mm_add_ps(ga, _mm_mul_ps(wvec, _mm_load_ps(nodePtr->ax)));
+                    }
+                }
+            }
+            
+            __m128 pu = _mm_add_ps(_mm_load_ps(p.u), ga);
+            _mm_store_ps(p.u, pu);
             
             nodePtr = &grid[p.c];
             phiPtr = p.phi;
@@ -136,40 +205,21 @@ public:
                         //__m128 phi = _mm_and_ps(_mm_load_ps(phiPtr), mask3D);
                         float w = *(phiPtr+3);
                         __m128 wvec = _mm_set_ps1(w);
-                        nodePtr->m += w;
-                    }
-                }
-            }
-        }
-        
-        for (int i = 0; i < nParticles; i++) {
-            Particle &p = particles[i];
-            
-            __m128 pu = _mm_load_ps(p.u);
-            
-            Node *nodePtr = &grid[p.c];
-            float *phiPtr = p.phi;
-            for (int x = 0; x < 2; x++, nodePtr += gSizeY_2) {
-                for (int y = 0; y < 2; y++, nodePtr += gSizeZ_2) {
-                    for (int z = 0; z < 2 ; z++, nodePtr++, phiPtr += 4) {
-                        //__m128 phi = _mm_and_ps(_mm_load_ps(phiPtr), mask3D);
-                        float w = *(phiPtr+3);
-                        __m128 wvec = _mm_set_ps1(w);
-                        nodePtr->m += w;
                         _mm_store_ps(nodePtr->u, _mm_add_ps(_mm_mul_ps(wvec, pu), _mm_load_ps(nodePtr->u)));
                     }
                 }
             }
         }
         
+        // Divide grid velocity by mass
         for (int i = 0; i < gSize; i++) {
             Node &n = grid[i];
             if (n.m > 0) {
-                n.invM = 1/n.m;
                 _mm_store_ps(n.u, _mm_mul_ps(_mm_load_ps(n.u), _mm_set_ps1(n.invM)));
             }
         }
         
+        // Advance particles
         for (int i = 0; i < nParticles; i++) {
             Particle &p = particles[i];
             
@@ -188,7 +238,11 @@ public:
                 }
             }
             
-            _mm_store_ps(p.x, _mm_add_ps(_mm_load_ps(p.x), gu));
+            __m128 px = _mm_add_ps(_mm_load_ps(p.x), gu);
+            px = _mm_min_ps(_mm_max_ps(lowBound, px), highBound);
+            
+            _mm_store_ps(p.x, px);
+            _mm_store_ps(p.u, gu);
         }
     }
 };

@@ -23,7 +23,7 @@ struct Particle {
         x[3] = 0;
         __m128 zero = _mm_setzero_ps();
         _mm_store_ps(u, zero);
-        u[0] = .1;
+        //u[0] = .01;
         for (int i = 0; i < 8; i++) {
             _mm_store_ps(&phi[i*4], zero);
         }

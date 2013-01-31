@@ -6,7 +6,7 @@ void testApp::setup(){
     simulator.AddParticles();
     
     glEnable(GL_DEPTH_TEST);
-    cam.setDistance(100);
+    cam.setDistance(150);
 }
 
 //--------------------------------------------------------------
@@ -18,6 +18,7 @@ void testApp::update(){
 void testApp::draw(){
     Particle *particles = simulator.particles;
     cam.begin();
+    ofPushMatrix();
     ofTranslate(-50, -50, -50);
     glBegin(GL_POINTS);
     for (int i = 0; i < simulator.nParticles; i++) {
@@ -25,7 +26,10 @@ void testApp::draw(){
         glVertex3f(p.x[0], p.x[1], p.x[2]);
     }
     glEnd();
+    ofPopMatrix();
     cam.end();
+    
+    ofDrawBitmapString(ofToString(ofGetFrameRate()), 10, 10);
 }
 
 //--------------------------------------------------------------
