@@ -2,10 +2,15 @@
 
 #include "ofMain.h"
 #include "Simulator.h"
+#include "ofxSSAO.h"
 
 class testApp : public ofBaseApp{
     Simulator *simulator;
     ofEasyCam cam;
+    ofImage image;
+    
+    ofFbo pointsFbo;
+    ofxSSAO ssao;
 	public:
 		void setup();
 		void update();
@@ -21,4 +26,5 @@ class testApp : public ofBaseApp{
 		void dragEvent(ofDragInfo dragInfo);
 		void gotMessage(ofMessage msg);
         void enableFog(float near, float far);
+        void disableFog();
 };

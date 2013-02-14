@@ -3,40 +3,74 @@
 //--------------------------------------------------------------
 void testApp::setup(){
     simulator = new Simulator();
-    simulator->InitializeGrid(128, 96, 40);
-    simulator->AddParticles();
+    simulator->InitializeGrid(256, 144, 120);
+    //simulator->AddParticles();
     
     glEnable(GL_DEPTH_TEST);
-    cam.setDistance(96);
+    cam.setDistance(180);
     
-    enableFog(100, 250);
+    
     ofBackground(0);
+    
+    ofFbo::Settings fboSettings;
+    fboSettings.width = ofGetWidth();
+    fboSettings.height = ofGetHeight();
+    fboSettings.internalformat = GL_RGBA;
+    fboSettings.useDepth = true;
+    fboSettings.depthStencilAsTexture = true;
+    fboSettings.depthStencilInternalFormat = GL_DEPTH_COMPONENT32;
+    pointsFbo.allocate(fboSettings);
+    
+    ssao.setup();
+    
+    cam.setNearClip(100);
+    cam.setFarClip(280);
 }
 
 //--------------------------------------------------------------
-void testApp::update(){\
+void testApp::update(){
 }
 
 //--------------------------------------------------------------
 void testApp::draw(){
     simulator->startThread();
     Particle *particles = simulator->particles;
+    enableFog(120, 280);
+    pointsFbo.begin();
+    ofClear(0);
     cam.begin();
     ofPushMatrix();
-    ofTranslate(-64, -48, -20);
+    ofTranslate(-128, -72, -60);
     glBegin(GL_POINTS);
     for (int i = 0; i < simulator->nParticles; i++) {
         Particle &p = particles[i];
-        float v = fminf(sqrtf(p.u[0]*p.u[0]+p.u[1]*p.u[1]+p.u[2]*p.u[2]), 1);
-        glColor3f(v, .6+.4*v, 1);
+        float v = fminf(.5*sqrtf(p.u[0]*p.u[0]+p.u[1]*p.u[1]+p.u[2]*p.u[2]), 1);
+        int mod = i/100%4;
+        if (mod == 0) {
+            glColor3f(v, .5+.5*v, 1);
+        } else if (mod == 1) {
+            glColor3f(v, 1, .5+.5*v);
+        } else if (mod == 2) {
+            glColor3f(1, .5+.5*v, v);
+        } else {
+            glColor3f(1, v, .5+.5*v);
+        }
         glVertex3f(p.x[0], p.x[1], p.x[2]);
     }
     glEnd();
     ofPopMatrix();
     cam.end();
-    
+    pointsFbo.end();
+    disableFog();
+    pointsFbo.getDepthTexture().draw(0, 0);
+    //pointsFbo.draw(0, 0);
     ofDrawBitmapString(ofToString(ofGetFrameRate()), 10, 10);
+    //image.grabScreen(0, 0, ofGetWidth(), ofGetHeight());
+    //image.saveImage("frame"+ofToString(ofGetFrameNum())+".jpg");
     simulator->waitForThread();
+    if (ofGetFrameNum()>2000) {
+        exit();
+    }
 }
 
 //--------------------------------------------------------------
@@ -92,4 +126,7 @@ void testApp::enableFog(float near, float far) {
     glHint(GL_FOG_HINT, GL_FASTEST);
     glFogf(GL_FOG_START, near);
     glFogf(GL_FOG_END, far);
+}
+void testApp::disableFog() {
+    glDisable(GL_FOG);
 }

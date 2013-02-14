@@ -30,6 +30,21 @@ struct Particle {
         }
         this->material = material;
     }
+    void Initialize(float px, float py, float pz, float ux, float uy, float uz, int material) {
+        x[0] = px;
+        x[1] = py;
+        x[2] = pz;
+        x[3] = 0;
+        u[0] = ux;
+        u[1] = uy;
+        u[2] = uz;
+        u[3] = 0;
+        __m128 zero = _mm_setzero_ps();
+        for (int i = 0; i < 8; i++) {
+            _mm_store_ps(&phi[i*4], zero);
+        }
+        this->material = material;
+    }
 };
 
 #endif

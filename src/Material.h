@@ -10,13 +10,15 @@
 #define FluidSSE_Material_h
 
 struct Material {
-    float stiffness, restDensity, elasticity, viscosity, smoothing;
-    void Initialize(float stiffness, float restDensity, float elasticity, float viscosity, float smoothing) {
-        this->stiffness = stiffness;
+    float stiffness, restDensity, bulkViscosity, elasticity, viscosity, smoothing, yieldPoint, yieldRate;
+    void Initialize(float stiffness, float restDensity, float bulkViscosity, float elasticity, float viscosity, float smoothing, float yieldRate) {
+        this->stiffness = stiffness*.5/restDensity;
         this->restDensity = restDensity;
+        this->bulkViscosity = bulkViscosity;
         this->elasticity = elasticity;
         this->viscosity = viscosity;
         this->smoothing = smoothing;
+        this->yieldRate = yieldRate;
     }
 };
 
